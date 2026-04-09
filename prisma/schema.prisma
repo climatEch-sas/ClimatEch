@@ -1,0 +1,225 @@
+// This is your Prisma schema file
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Usuario {
+  id        Int      @id @default(autoincrement())
+  nombre    String   @db.VarChar(100)
+  email     String   @unique @db.VarChar(150)
+  password  String   @db.VarChar(255)
+  rol       Rol      @default(CLIENTE)
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cliente        Cliente?
+  tecnico        Tecnico?
+  notificaciones Notificacion[]
+
+  @@map("usuarios")
+}
+
+enum Rol {
+  ADMIN
+  TECNICO
+  CLIENTE
+}
+
+model Cliente {
+  id         Int    @id @default(autoincrement())
+  nombre     String @db.VarChar(100)
+  telefono   String @db.VarChar(20)
+  direccion  String @db.VarChar(255)
+  usuarioId  Int    @unique
+
+  usuario    Usuario      @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  equipos    Equipo[]
+  ordenes    Orden[]
+  cotizaciones Cotizacion[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("clientes")
+}
+
+model Tecnico {
+  id          Int    @id @default(autoincrement())
+  nombre      String @db.VarChar(100)
+  especialidad String @db.VarChar(150)
+  disponible  Boolean @default(true)
+  usuarioId   Int    @unique
+
+  usuario     Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  ordenes     Orden[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("tecnicos")
+}
+
+model Equipo {
+  id        Int    @id @default(autoincrement())
+  tipo      String @db.VarChar(100)
+  marca     String @db.VarChar(100)
+  modelo    String @db.VarChar(100)
+  serial    String? @db.VarChar(100)
+  clienteId Int
+
+  cliente   Cliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  ordenes   Orden[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("equipos")
+}
+
+model Orden {
+  id         Int         @id @default(autoincrement())
+  fecha      DateTime    @default(now())
+  estado     EstadoOrden @default(PENDIENTE)
+  descripcion String?    @db.Text
+  prioridad  Prioridad   @default(NORMAL)
+  clienteId  Int
+  tecnicoId  Int?
+  equipoId   Int
+
+  cliente    Cliente      @relation(fields: [clienteId], references: [id])
+  tecnico    Tecnico?     @relation(fields: [tecnicoId], references: [id])
+  equipo     Equipo       @relation(fields: [equipoId], references: [id])
+  mantenimientos Mantenimiento[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("ordenes")
+}
+
+enum EstadoOrden {
+  PENDIENTE
+  EN_PROCESO
+  COMPLETADO
+  CANCELADO
+}
+
+enum Prioridad {
+  BAJA
+  NORMAL
+  ALTA
+  URGENTE
+}
+
+model Mantenimiento {
+  id           Int             @id @default(autoincrement())
+  tipo         TipoMantenimiento
+  descripcion  String          @db.Text
+  evidenciaUrl String?         @db.VarChar(500)
+  fechaRealizado DateTime?
+  ordenId      Int
+
+  orden        Orden           @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  detalleRepuestos DetalleRepuesto[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("mantenimientos")
+}
+
+enum TipoMantenimiento {
+  PREVENTIVO
+  CORRECTIVO
+}
+
+model Repuesto {
+  id       Int    @id @default(autoincrement())
+  nombre   String @db.VarChar(150)
+  costo    Decimal @db.Decimal(10, 2)
+  stock    Int     @default(0)
+  unidad   String? @db.VarChar(50)
+
+  detalleRepuestos DetalleRepuesto[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("repuestos")
+}
+
+model DetalleRepuesto {
+  id              Int @id @default(autoincrement())
+  cantidad        Int
+  costoUnitario   Decimal @db.Decimal(10, 2)
+  mantenimientoId Int
+  repuestoId      Int
+
+  mantenimiento   Mantenimiento @relation(fields: [mantenimientoId], references: [id], onDelete: Cascade)
+  repuesto        Repuesto      @relation(fields: [repuestoId], references: [id])
+
+  @@map("detalle_repuestos")
+}
+
+model Cotizacion {
+  id         Int               @id @default(autoincrement())
+  fecha      DateTime          @default(now())
+  total      Decimal           @db.Decimal(10, 2)
+  estado     EstadoCotizacion  @default(PENDIENTE)
+  notas      String?           @db.Text
+  clienteId  Int
+
+  cliente    Cliente           @relation(fields: [clienteId], references: [id])
+  items      ItemCotizacion[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("cotizaciones")
+}
+
+enum EstadoCotizacion {
+  PENDIENTE
+  APROBADA
+  RECHAZADA
+}
+
+model ItemCotizacion {
+  id           Int      @id @default(autoincrement())
+  descripcion  String   @db.VarChar(255)
+  cantidad     Int
+  precioUnit   Decimal  @db.Decimal(10, 2)
+  subtotal     Decimal  @db.Decimal(10, 2)
+  cotizacionId Int
+
+  cotizacion   Cotizacion @relation(fields: [cotizacionId], references: [id], onDelete: Cascade)
+
+  @@map("items_cotizacion")
+}
+
+model Notificacion {
+  id        Int      @id @default(autoincrement())
+  usuarioId Int
+  titulo    String   @db.VarChar(150)
+  mensaje   String   @db.Text
+  tipo      TipoNotificacion @default(INFO)
+  leida     Boolean  @default(false)
+  creadaEn  DateTime @default(now())
+
+  usuario   Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@map("notificaciones")
+}
+
+enum TipoNotificacion {
+  INFO
+  EXITO
+  ADVERTENCIA
+  ERROR
+}
