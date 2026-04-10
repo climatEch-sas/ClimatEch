@@ -11,6 +11,24 @@ const include = {
   }
 };
 
+// ─── Helper: crear notificación sin romper el flujo principal ───────────────
+async function notify({ usuarioId, titulo, mensaje, tipo = 'INFO' }) {
+  try {
+    await prisma.notificacion.create({ data: { usuarioId, titulo, mensaje, tipo } });
+  } catch (err) {
+    console.error('[notify] Error al crear notificación:', err.message);
+  }
+}
+
+// ─── Helper: obtener usuarioId de todos los admins activos ──────────────────
+async function getAdminUserIds() {
+  const admins = await prisma.usuario.findMany({
+    where: { rol: 'ADMIN', activo: true },
+    select: { id: true }
+  });
+  return admins.map((a) => a.id);
+}
+
 export const getAll = async (req, res, next) => {
   try {
     const { estado, tecnicoId, clienteId } = req.query;
@@ -19,7 +37,6 @@ export const getAll = async (req, res, next) => {
     if (tecnicoId) where.tecnicoId = Number(tecnicoId);
     if (clienteId) where.clienteId = Number(clienteId);
 
-    // Filtro por rol: técnico solo ve sus órdenes, cliente solo ve las suyas
     if (req.user.rol === 'TECNICO') {
       const tec = await prisma.tecnico.findUnique({ where: { usuarioId: req.user.id } });
       if (tec) where.tecnicoId = tec.id;
@@ -73,6 +90,30 @@ export const create = async (req, res, next) => {
       },
       include
     });
+
+    // ── NOTIFICACIÓN: nueva orden pendiente → todos los admins ──────────────
+    const adminIds = await getAdminUserIds();
+    const clienteNombre = orden.cliente?.nombre || 'Un cliente';
+    const equipoInfo = orden.equipo ? `${orden.equipo.marca} ${orden.equipo.modelo}` : 'equipo';
+    for (const adminId of adminIds) {
+      await notify({
+        usuarioId: adminId,
+        titulo: 'Nueva solicitud de servicio',
+        mensaje: `${clienteNombre} solicitó servicio para ${equipoInfo}. Pendiente de asignar técnico.`,
+        tipo: 'ADVERTENCIA',
+      });
+    }
+
+    // ── NOTIFICACIÓN: si ya viene con técnico asignado desde creación ───────
+    if (orden.tecnicoId && orden.tecnico?.usuarioId) {
+      await notify({
+        usuarioId: orden.tecnico.usuarioId,
+        titulo: 'Nueva orden asignada',
+        mensaje: `Se te asignó una nueva orden de servicio para ${equipoInfo} (${orden.prioridad}).`,
+        tipo: 'INFO',
+      });
+    }
+
     res.status(201).json(orden);
   } catch (error) { next(error); }
 };
@@ -80,6 +121,8 @@ export const create = async (req, res, next) => {
 export const update = async (req, res, next) => {
   try {
     const { estado, tecnicoId, descripcion, prioridad } = req.body;
+    const ordenAntes = await prisma.orden.findUnique({ where: { id: Number(req.params.id) }, include });
+
     const orden = await prisma.orden.update({
       where: { id: Number(req.params.id) },
       data: {
@@ -90,6 +133,41 @@ export const update = async (req, res, next) => {
       },
       include
     });
+
+    const equipoInfo = orden.equipo ? `${orden.equipo.marca} ${orden.equipo.modelo}` : 'equipo';
+
+    // ── NOTIFICACIÓN: se asignó (o cambió) el técnico ───────────────────────
+    const tecnicoAnteriorId = ordenAntes?.tecnicoId ?? null;
+    const tecnicoNuevoId    = orden.tecnicoId ?? null;
+    const tecnicoCambio = tecnicoNuevoId && tecnicoNuevoId !== tecnicoAnteriorId;
+
+    if (tecnicoCambio && orden.tecnico?.usuarioId) {
+      await notify({
+        usuarioId: orden.tecnico.usuarioId,
+        titulo: 'Nueva orden asignada',
+        mensaje: `Se te asignó la orden #${orden.id} para atender ${equipoInfo} (cliente: ${orden.cliente?.nombre || ''}).`,
+        tipo: 'INFO',
+      });
+    }
+
+    // ── NOTIFICACIÓN: orden completada → cliente ─────────────────────────────
+    const estadoAntes = ordenAntes?.estado;
+    if (estado === 'COMPLETADO' && estadoAntes !== 'COMPLETADO') {
+      // Obtener usuarioId del cliente
+      const clienteRecord = await prisma.cliente.findUnique({
+        where: { id: orden.clienteId },
+        include: { usuario: { select: { id: true } } }
+      });
+      if (clienteRecord?.usuario?.id) {
+        await notify({
+          usuarioId: clienteRecord.usuario.id,
+          titulo: 'Servicio completado',
+          mensaje: `Tu orden de servicio #${orden.id} para ${equipoInfo} fue completada exitosamente.`,
+          tipo: 'EXITO',
+        });
+      }
+    }
+
     res.json(orden);
   } catch (error) { next(error); }
 };

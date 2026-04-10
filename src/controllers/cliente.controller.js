@@ -4,6 +4,9 @@ import bcrypt from 'bcryptjs';
 export const getAll = async (req, res, next) => {
   try {
     const clientes = await prisma.cliente.findMany({
+      where: {
+        usuario: { activo: true },  // FIX: excluir usuarios desactivados
+      },
       include: {
         usuario: { select: { id: true, email: true, activo: true } },
         _count: { select: { equipos: true, ordenes: true } }
@@ -70,7 +73,7 @@ export const remove = async (req, res, next) => {
   try {
     const cliente = await prisma.cliente.findUnique({ where: { id: Number(req.params.id) } });
     if (!cliente) return res.status(404).json({ message: 'Cliente no encontrado' });
-    // Desactivar usuario asociado
+    // Desactiva el usuario: bloquea login y lo excluye del listado (filtro activo:true en getAll)
     await prisma.usuario.update({ where: { id: cliente.usuarioId }, data: { activo: false } });
     res.json({ message: 'Cliente desactivado exitosamente' });
   } catch (error) { next(error); }

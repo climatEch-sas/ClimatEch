@@ -1,5 +1,14 @@
 import prisma from '../config/prisma.js';
 
+// ─── Helper: crear notificación sin romper el flujo principal ───────────────
+async function notify({ usuarioId, titulo, mensaje, tipo = 'INFO' }) {
+  try {
+    await prisma.notificacion.create({ data: { usuarioId, titulo, mensaje, tipo } });
+  } catch (err) {
+    console.error('[notify] Error al crear notificación:', err.message);
+  }
+}
+
 export const create = async (req, res, next) => {
   try {
     const { tipo, descripcion, evidenciaUrl, ordenId, repuestos } = req.body;
@@ -27,7 +36,7 @@ export const create = async (req, res, next) => {
       },
       include: {
         detalleRepuestos: { include: { repuesto: true } },
-        orden: true
+        orden: { include: { equipo: true, cliente: { include: { usuario: { select: { id: true } } } } } }
       }
     });
 
@@ -55,10 +64,34 @@ export const getByOrden = async (req, res, next) => {
 export const completar = async (req, res, next) => {
   try {
     const { ordenId } = req.body;
+
+    // Obtener la orden con datos del cliente y equipo antes de actualizar
+    const orden = await prisma.orden.findUnique({
+      where: { id: Number(ordenId) },
+      include: {
+        equipo: true,
+        cliente: { include: { usuario: { select: { id: true } } } }
+      }
+    });
+
     await prisma.orden.update({
       where: { id: Number(ordenId) },
       data: { estado: 'COMPLETADO' }
     });
+
+    // ── NOTIFICACIÓN: orden completada → cliente ─────────────────────────────
+    if (orden?.cliente?.usuario?.id) {
+      const equipoInfo = orden.equipo
+        ? `${orden.equipo.marca} ${orden.equipo.modelo}`
+        : 'equipo';
+      await notify({
+        usuarioId: orden.cliente.usuario.id,
+        titulo: 'Servicio completado',
+        mensaje: `Tu orden de servicio #${orden.id} para ${equipoInfo} fue completada exitosamente.`,
+        tipo: 'EXITO',
+      });
+    }
+
     res.json({ message: 'Servicio confirmado y orden completada' });
   } catch (error) { next(error); }
 };
