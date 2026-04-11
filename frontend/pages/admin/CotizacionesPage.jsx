@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, Trash2, FileText, Download, Eye } from 'lucide-react';
-import { Modal, ConfirmDialog, EmptyState, PageLoader, SearchInput, StatusBadge } from '../../components/ui';
+import { Plus, Trash2, FileText, Download, Eye, ClipboardList } from 'lucide-react';
+import { Modal, ConfirmDialog, EmptyState, PageLoader, StatusBadge } from '../../components/ui';
 import api from '../../utils/api';
 import toast from 'react-hot-toast';
 
@@ -16,6 +16,13 @@ export default function CotizacionesPage() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ clienteId: '', notas: '', items: [{ descripcion: '', cantidad: 1, precioUnit: '' }] });
 
+  // Estado para solicitudes pendientes del cliente seleccionado
+  const [solicitudes, setSolicitudes] = useState([]);
+  const [solicitudId, setSolicitudId] = useState('');
+  const [loadingSolicitudes, setLoadingSolicitudes] = useState(false);
+  // Items bloqueados que vienen de la solicitud (no editables)
+  const [itemsFromSolicitud, setItemsFromSolicitud] = useState([]);
+
   const load = async () => {
     const [co, cl] = await Promise.all([api.get('/cotizaciones'), api.get('/clientes')]);
     setCotizaciones(co.data); setClientes(cl.data);
@@ -23,12 +30,82 @@ export default function CotizacionesPage() {
   };
   useEffect(() => { load(); }, []);
 
+  // Al cambiar cliente, cargar sus solicitudes pendientes
+  const handleClienteChange = async (clienteId) => {
+    setField('clienteId', clienteId);
+    setSolicitudId('');
+    setItemsFromSolicitud([]);
+    setForm(p => ({ ...p, clienteId, items: [{ descripcion: '', cantidad: 1, precioUnit: '' }] }));
+
+    if (!clienteId) { setSolicitudes([]); return; }
+
+    setLoadingSolicitudes(true);
+    try {
+      const res = await api.get(`/cotizaciones/solicitudes/${clienteId}`);
+      setSolicitudes(res.data);
+    } catch {
+      toast.error('Error al cargar solicitudes del cliente');
+      setSolicitudes([]);
+    } finally {
+      setLoadingSolicitudes(false);
+    }
+  };
+
+  // Al seleccionar una solicitud, extraer sus repuestos como items no editables
+  const handleSolicitudChange = (ordenId) => {
+    setSolicitudId(ordenId);
+    if (!ordenId) {
+      setItemsFromSolicitud([]);
+      setForm(p => ({ ...p, items: [{ descripcion: '', cantidad: 1, precioUnit: '' }] }));
+      return;
+    }
+
+    const orden = solicitudes.find(s => String(s.id) === String(ordenId));
+    if (!orden) return;
+
+    // Recopilar todos los detalleRepuestos de los mantenimientos de la orden
+    const repuestos = [];
+    if (orden.mantenimientos?.length) {
+      orden.mantenimientos.forEach(mant => {
+        mant.detalleRepuestos?.forEach(dr => {
+          repuestos.push({
+            descripcion: dr.repuesto.nombre,
+            cantidad: dr.cantidad,
+            precioUnit: Number(dr.repuesto.costo),
+          });
+        });
+      });
+    }
+
+    // Si no hay repuestos registrados, crear un item base con la descripción de la orden
+    if (repuestos.length === 0) {
+      repuestos.push({
+        descripcion: orden.descripcion || `Servicio - ${orden.equipo?.marca} ${orden.equipo?.modelo}`,
+        cantidad: 1,
+        precioUnit: 0,
+      });
+    }
+
+    setItemsFromSolicitud(repuestos);
+    setForm(p => ({ ...p, items: repuestos }));
+  };
+
   const setField = (k, v) => setForm(p => ({ ...p, [k]: v }));
-  const setItem = (i, k, v) => setForm(p => {
-    const items = [...p.items]; items[i] = { ...items[i], [k]: v }; return { ...p, items };
-  });
-  const addItem = () => setForm(p => ({ ...p, items: [...p.items, { descripcion: '', cantidad: 1, precioUnit: '' }] }));
-  const removeItem = (i) => setForm(p => ({ ...p, items: p.items.filter((_, idx) => idx !== i) }));
+  const setItem = (i, k, v) => {
+    // Solo se pueden editar items que NO provienen de la solicitud
+    if (itemsFromSolicitud.length > 0) return;
+    setForm(p => {
+      const items = [...p.items]; items[i] = { ...items[i], [k]: v }; return { ...p, items };
+    });
+  };
+  const addItem = () => {
+    if (itemsFromSolicitud.length > 0) return;
+    setForm(p => ({ ...p, items: [...p.items, { descripcion: '', cantidad: 1, precioUnit: '' }] }));
+  };
+  const removeItem = (i) => {
+    if (itemsFromSolicitud.length > 0) return;
+    setForm(p => ({ ...p, items: p.items.filter((_, idx) => idx !== i) }));
+  };
 
   const total = form.items.reduce((s, it) => s + (Number(it.cantidad) * Number(it.precioUnit) || 0), 0);
 
@@ -63,6 +140,14 @@ export default function CotizacionesPage() {
     } catch { toast.error('Error al generar PDF'); }
   };
 
+  const handleOpenModal = () => {
+    setForm({ clienteId: '', notas: '', items: [{ descripcion: '', cantidad: 1, precioUnit: '' }] });
+    setSolicitudes([]);
+    setSolicitudId('');
+    setItemsFromSolicitud([]);
+    setModal(true);
+  };
+
   if (loading) return <PageLoader />;
 
   return (
@@ -72,7 +157,7 @@ export default function CotizacionesPage() {
           <h1 className="page-title">Cotizaciones</h1>
           <p className="page-subtitle">{cotizaciones.length} cotizaciones</p>
         </div>
-        <button onClick={() => { setForm({ clienteId: '', notas: '', items: [{ descripcion: '', cantidad: 1, precioUnit: '' }] }); setModal(true); }} className="btn-primary">
+        <button onClick={handleOpenModal} className="btn-primary">
           <Plus size={16} />Nueva cotización
         </button>
       </div>
@@ -118,31 +203,100 @@ export default function CotizacionesPage() {
       {/* Create modal */}
       <Modal open={modal} onClose={() => setModal(false)} title="Nueva cotización" maxWidth="max-w-2xl">
         <form onSubmit={handleCreate} className="space-y-4">
+
+          {/* Cliente */}
           <div>
             <label className="label">Cliente *</label>
-            <select className="input-field" value={form.clienteId} onChange={e => setField('clienteId', e.target.value)}>
+            <select className="input-field" value={form.clienteId} onChange={e => handleClienteChange(e.target.value)}>
               <option value="">Seleccionar cliente</option>
               {clientes.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
             </select>
           </div>
 
+          {/* Solicitudes pendientes del cliente */}
+          {form.clienteId && (
+            <div>
+              <label className="label flex items-center gap-2">
+                <ClipboardList size={14} className="text-blue-400" />
+                Solicitud pendiente
+                {loadingSolicitudes && <span className="text-xs text-slate-500 font-normal ml-1">Cargando...</span>}
+              </label>
+              {!loadingSolicitudes && solicitudes.length === 0 ? (
+                <p className="text-xs text-slate-500 mt-1 px-1">
+                  Este cliente no tiene solicitudes pendientes. Puedes ingresar los items manualmente.
+                </p>
+              ) : (
+                <select
+                  className="input-field"
+                  value={solicitudId}
+                  onChange={e => handleSolicitudChange(e.target.value)}
+                  disabled={loadingSolicitudes}
+                >
+                  <option value="">— Sin solicitud asociada —</option>
+                  {solicitudes.map(s => (
+                    <option key={s.id} value={s.id}>
+                      #{s.id} · {s.equipo?.marca} {s.equipo?.modelo} — {s.descripcion?.slice(0, 50) || 'Sin descripción'}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+
+          {/* Items */}
           <div>
             <div className="flex justify-between items-center mb-2">
-              <label className="label mb-0">Items *</label>
-              <button type="button" onClick={addItem} className="text-xs text-brand-primary hover:text-blue-400 flex items-center gap-1"><Plus size={12} />Agregar item</button>
+              <label className="label mb-0">
+                Repuestos / Items *
+                {itemsFromSolicitud.length > 0 && (
+                  <span className="ml-2 text-xs font-normal text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">
+                    Desde solicitud · solo lectura
+                  </span>
+                )}
+              </label>
+              {itemsFromSolicitud.length === 0 && (
+                <button type="button" onClick={addItem} className="text-xs text-brand-primary hover:text-blue-400 flex items-center gap-1">
+                  <Plus size={12} />Agregar item
+                </button>
+              )}
             </div>
+
             <div className="space-y-2">
               {form.items.map((item, i) => (
                 <div key={i} className="grid grid-cols-12 gap-2 items-start">
-                  <input className="input-field col-span-5 text-sm py-2" placeholder="Descripción" value={item.descripcion} onChange={e => setItem(i, 'descripcion', e.target.value)} />
-                  <input type="number" className="input-field col-span-2 text-sm py-2" placeholder="Cant." value={item.cantidad} onChange={e => setItem(i, 'cantidad', e.target.value)} min="1" />
-                  <input type="number" className="input-field col-span-4 text-sm py-2" placeholder="Precio unit." value={item.precioUnit} onChange={e => setItem(i, 'precioUnit', e.target.value)} />
-                  {form.items.length > 1 && (
-                    <button type="button" onClick={() => removeItem(i)} className="col-span-1 text-red-400 hover:text-red-300 mt-2 flex justify-center"><Trash2 size={14} /></button>
+                  <input
+                    className={`input-field col-span-5 text-sm py-2 ${itemsFromSolicitud.length > 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+                    placeholder="Descripción"
+                    value={item.descripcion}
+                    onChange={e => setItem(i, 'descripcion', e.target.value)}
+                    readOnly={itemsFromSolicitud.length > 0}
+                  />
+                  <input
+                    type="number"
+                    className={`input-field col-span-2 text-sm py-2 ${itemsFromSolicitud.length > 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+                    placeholder="Cant."
+                    value={item.cantidad}
+                    onChange={e => setItem(i, 'cantidad', e.target.value)}
+                    min="1"
+                    readOnly={itemsFromSolicitud.length > 0}
+                  />
+                  <input
+                    type="number"
+                    className={`input-field col-span-4 text-sm py-2 ${itemsFromSolicitud.length > 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+                    placeholder="Precio unit."
+                    value={item.precioUnit}
+                    onChange={e => setItem(i, 'precioUnit', e.target.value)}
+                    readOnly={itemsFromSolicitud.length > 0}
+                  />
+                  {form.items.length > 1 && itemsFromSolicitud.length === 0 && (
+                    <button type="button" onClick={() => removeItem(i)} className="col-span-1 text-red-400 hover:text-red-300 mt-2 flex justify-center">
+                      <Trash2 size={14} />
+                    </button>
                   )}
                 </div>
               ))}
             </div>
+
             <div className="flex justify-end mt-3 pt-3 border-t border-slate-700/50">
               <p className="font-bold text-green-400">Total: ${total.toLocaleString('es-CO')} COP</p>
             </div>
