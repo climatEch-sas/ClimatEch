@@ -28,15 +28,15 @@ export const getOne = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-// Devuelve las órdenes PENDIENTES de un cliente con sus detalles de repuestos
-export const getSolicitudesByCliente = async (req, res, next) => {
+/**
+ * GET /cotizaciones/solicitudes/:clienteId
+ * Retorna las órdenes EN_PROCESO del cliente con sus repuestos
+ */
+export const getSolicitudesCliente = async (req, res, next) => {
   try {
-    const { clienteId } = req.params;
+    const clienteId = Number(req.params.clienteId);
     const ordenes = await prisma.orden.findMany({
-      where: {
-        clienteId: Number(clienteId),
-        estado: 'PENDIENTE',
-      },
+      where: { clienteId, estado: 'EN_PROCESO' },
       include: {
         equipo: true,
         mantenimientos: {
@@ -49,7 +49,34 @@ export const getSolicitudesByCliente = async (req, res, next) => {
       },
       orderBy: { createdAt: 'desc' }
     });
-    res.json(ordenes);
+
+    // Aplanar los repuestos de todos los mantenimientos de cada orden
+    const result = ordenes.map(orden => {
+      const repuestos = [];
+      const seen = new Set();
+      orden.mantenimientos.forEach(m => {
+        m.detalleRepuestos.forEach(dr => {
+          const key = dr.repuestoId;
+          if (!seen.has(key)) {
+            seen.add(key);
+            repuestos.push({
+              repuestoId: dr.repuestoId,
+              descripcion: dr.repuesto.nombre,
+              cantidad: dr.cantidad,
+              precioUnit: Number(dr.costoUnitario),
+            });
+          }
+        });
+      });
+      return {
+        id: orden.id,
+        descripcion: orden.descripcion,
+        equipo: orden.equipo,
+        repuestos,
+      };
+    });
+
+    res.json(result);
   } catch (error) { next(error); }
 };
 
