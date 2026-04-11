@@ -28,6 +28,31 @@ export const getOne = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+// Devuelve las órdenes PENDIENTES de un cliente con sus detalles de repuestos
+export const getSolicitudesByCliente = async (req, res, next) => {
+  try {
+    const { clienteId } = req.params;
+    const ordenes = await prisma.orden.findMany({
+      where: {
+        clienteId: Number(clienteId),
+        estado: 'PENDIENTE',
+      },
+      include: {
+        equipo: true,
+        mantenimientos: {
+          include: {
+            detalleRepuestos: {
+              include: { repuesto: true }
+            }
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(ordenes);
+  } catch (error) { next(error); }
+};
+
 export const create = async (req, res, next) => {
   try {
     const { clienteId, notas, items } = req.body;
