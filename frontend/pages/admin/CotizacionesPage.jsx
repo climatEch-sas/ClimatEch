@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, Trash2, FileText, Download, Eye, ClipboardList } from 'lucide-react';
+import { Plus, Trash2, FileText, Download, Eye, Lock } from 'lucide-react';
 import { Modal, ConfirmDialog, EmptyState, PageLoader, StatusBadge } from '../../components/ui';
 import api from '../../utils/api';
 import toast from 'react-hot-toast';
+
+const MANO_DE_OBRA = { descripcion: 'Mano de Obra', cantidad: 1, precioUnit: 100000 };
 
 export default function CotizacionesPage() {
   const [cotizaciones, setCotizaciones] = useState([]);
@@ -14,14 +16,17 @@ export default function CotizacionesPage() {
   const [selected, setSelected] = useState(null);
   const [deleteId, setDeleteId] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ clienteId: '', notas: '', items: [{ descripcion: '', cantidad: 1, precioUnit: '' }] });
 
-  // Estado para solicitudes pendientes del cliente seleccionado
+  // solicitudes (órdenes EN_PROCESO) del cliente seleccionado
   const [solicitudes, setSolicitudes] = useState([]);
-  const [solicitudId, setSolicitudId] = useState('');
   const [loadingSolicitudes, setLoadingSolicitudes] = useState(false);
-  // Items bloqueados que vienen de la solicitud (no editables)
-  const [itemsFromSolicitud, setItemsFromSolicitud] = useState([]);
+
+  const [form, setForm] = useState({
+    clienteId: '',
+    solicitudId: '',
+    notas: '',
+    itemsRepuestos: [], // items de repuestos (readonly)
+  });
 
   const load = async () => {
     const [co, cl] = await Promise.all([api.get('/cotizaciones'), api.get('/clientes')]);
@@ -30,95 +35,62 @@ export default function CotizacionesPage() {
   };
   useEffect(() => { load(); }, []);
 
-  // Al cambiar cliente, cargar sus solicitudes pendientes
+  // Al cambiar el cliente, cargar sus solicitudes EN_PROCESO
   const handleClienteChange = async (clienteId) => {
-    setField('clienteId', clienteId);
-    setSolicitudId('');
-    setItemsFromSolicitud([]);
-    setForm(p => ({ ...p, clienteId, items: [{ descripcion: '', cantidad: 1, precioUnit: '' }] }));
-
-    if (!clienteId) { setSolicitudes([]); return; }
-
+    setForm(p => ({ ...p, clienteId, solicitudId: '', itemsRepuestos: [] }));
+    setSolicitudes([]);
+    if (!clienteId) return;
     setLoadingSolicitudes(true);
     try {
       const res = await api.get(`/cotizaciones/solicitudes/${clienteId}`);
       setSolicitudes(res.data);
     } catch {
-      toast.error('Error al cargar solicitudes del cliente');
-      setSolicitudes([]);
+      toast.error('Error al cargar solicitudes');
     } finally {
       setLoadingSolicitudes(false);
     }
   };
 
-  // Al seleccionar una solicitud, extraer sus repuestos como items no editables
-  const handleSolicitudChange = (ordenId) => {
-    setSolicitudId(ordenId);
-    if (!ordenId) {
-      setItemsFromSolicitud([]);
-      setForm(p => ({ ...p, items: [{ descripcion: '', cantidad: 1, precioUnit: '' }] }));
-      return;
-    }
-
-    const orden = solicitudes.find(s => String(s.id) === String(ordenId));
-    if (!orden) return;
-
-    // Recopilar todos los detalleRepuestos de los mantenimientos de la orden
-    const repuestos = [];
-    if (orden.mantenimientos?.length) {
-      orden.mantenimientos.forEach(mant => {
-        mant.detalleRepuestos?.forEach(dr => {
-          repuestos.push({
-            descripcion: dr.repuesto.nombre,
-            cantidad: dr.cantidad,
-            precioUnit: Number(dr.repuesto.costo),
-          });
-        });
-      });
-    }
-
-    // Si no hay repuestos registrados, crear un item base con la descripción de la orden
-    if (repuestos.length === 0) {
-      repuestos.push({
-        descripcion: orden.descripcion || `Servicio - ${orden.equipo?.marca} ${orden.equipo?.modelo}`,
-        cantidad: 1,
-        precioUnit: 0,
-      });
-    }
-
-    setItemsFromSolicitud(repuestos);
-    setForm(p => ({ ...p, items: repuestos }));
+  // Al elegir solicitud, cargar sus repuestos como items readonly
+  const handleSolicitudChange = (solicitudId) => {
+    const sol = solicitudes.find(s => String(s.id) === String(solicitudId));
+    setForm(p => ({
+      ...p,
+      solicitudId,
+      itemsRepuestos: sol ? sol.repuestos : [],
+    }));
   };
 
-  const setField = (k, v) => setForm(p => ({ ...p, [k]: v }));
-  const setItem = (i, k, v) => {
-    // Solo se pueden editar items que NO provienen de la solicitud
-    if (itemsFromSolicitud.length > 0) return;
-    setForm(p => {
-      const items = [...p.items]; items[i] = { ...items[i], [k]: v }; return { ...p, items };
-    });
-  };
-  const addItem = () => {
-    if (itemsFromSolicitud.length > 0) return;
-    setForm(p => ({ ...p, items: [...p.items, { descripcion: '', cantidad: 1, precioUnit: '' }] }));
-  };
-  const removeItem = (i) => {
-    if (itemsFromSolicitud.length > 0) return;
-    setForm(p => ({ ...p, items: p.items.filter((_, idx) => idx !== i) }));
-  };
+  // Todos los items: repuestos + Mano de Obra fija
+  const allItems = [
+    ...form.itemsRepuestos,
+    MANO_DE_OBRA,
+  ];
 
-  const total = form.items.reduce((s, it) => s + (Number(it.cantidad) * Number(it.precioUnit) || 0), 0);
+  const total = allItems.reduce((s, it) => s + (Number(it.cantidad) * Number(it.precioUnit) || 0), 0);
 
   const handleCreate = async (e) => {
     e.preventDefault();
-    if (!form.clienteId || !form.items.length) return toast.error('Cliente e items requeridos');
+    if (!form.clienteId) return toast.error('Selecciona un cliente');
+    if (!form.solicitudId) return toast.error('Selecciona una solicitud en proceso');
     setSaving(true);
     try {
-      await api.post('/cotizaciones', form);
+      await api.post('/cotizaciones', {
+        clienteId: form.clienteId,
+        notas: form.notas,
+        items: allItems,
+      });
       toast.success('Cotización creada');
-      setModal(false); load();
+      setModal(false);
+      load();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
     finally { setSaving(false); }
+  };
+
+  const openCreate = () => {
+    setForm({ clienteId: '', solicitudId: '', notas: '', itemsRepuestos: [] });
+    setSolicitudes([]);
+    setModal(true);
   };
 
   const handleUpdateEstado = async (id, estado) => {
@@ -140,14 +112,6 @@ export default function CotizacionesPage() {
     } catch { toast.error('Error al generar PDF'); }
   };
 
-  const handleOpenModal = () => {
-    setForm({ clienteId: '', notas: '', items: [{ descripcion: '', cantidad: 1, precioUnit: '' }] });
-    setSolicitudes([]);
-    setSolicitudId('');
-    setItemsFromSolicitud([]);
-    setModal(true);
-  };
-
   if (loading) return <PageLoader />;
 
   return (
@@ -157,7 +121,7 @@ export default function CotizacionesPage() {
           <h1 className="page-title">Cotizaciones</h1>
           <p className="page-subtitle">{cotizaciones.length} cotizaciones</p>
         </div>
-        <button onClick={handleOpenModal} className="btn-primary">
+        <button onClick={openCreate} className="btn-primary">
           <Plus size={16} />Nueva cotización
         </button>
       </div>
@@ -213,29 +177,26 @@ export default function CotizacionesPage() {
             </select>
           </div>
 
-          {/* Solicitudes pendientes del cliente */}
+          {/* Solicitudes EN_PROCESO del cliente */}
           {form.clienteId && (
             <div>
-              <label className="label flex items-center gap-2">
-                <ClipboardList size={14} className="text-blue-400" />
-                Solicitud pendiente
-                {loadingSolicitudes && <span className="text-xs text-slate-500 font-normal ml-1">Cargando...</span>}
-              </label>
-              {!loadingSolicitudes && solicitudes.length === 0 ? (
-                <p className="text-xs text-slate-500 mt-1 px-1">
-                  Este cliente no tiene solicitudes pendientes. Puedes ingresar los items manualmente.
+              <label className="label">Solicitud en proceso *</label>
+              {loadingSolicitudes ? (
+                <p className="text-xs text-slate-400 py-2">Cargando solicitudes...</p>
+              ) : solicitudes.length === 0 ? (
+                <p className="text-xs text-amber-400 py-2 bg-amber-500/10 rounded-lg px-3 border border-amber-500/20">
+                  Este cliente no tiene solicitudes en estado "En Proceso".
                 </p>
               ) : (
                 <select
                   className="input-field"
-                  value={solicitudId}
+                  value={form.solicitudId}
                   onChange={e => handleSolicitudChange(e.target.value)}
-                  disabled={loadingSolicitudes}
                 >
-                  <option value="">— Sin solicitud asociada —</option>
+                  <option value="">Seleccionar solicitud</option>
                   {solicitudes.map(s => (
                     <option key={s.id} value={s.id}>
-                      #{s.id} · {s.equipo?.marca} {s.equipo?.modelo} — {s.descripcion?.slice(0, 50) || 'Sin descripción'}
+                      Solicitud #{s.id} — {s.equipo ? `${s.equipo.marca} ${s.equipo.modelo}` : ''} {s.descripcion ? `· ${s.descripcion.slice(0, 40)}` : ''}
                     </option>
                   ))}
                 </select>
@@ -243,73 +204,76 @@ export default function CotizacionesPage() {
             </div>
           )}
 
-          {/* Items */}
-          <div>
-            <div className="flex justify-between items-center mb-2">
-              <label className="label mb-0">
-                Repuestos / Items *
-                {itemsFromSolicitud.length > 0 && (
-                  <span className="ml-2 text-xs font-normal text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">
-                    Desde solicitud · solo lectura
-                  </span>
-                )}
-              </label>
-              {itemsFromSolicitud.length === 0 && (
-                <button type="button" onClick={addItem} className="text-xs text-brand-primary hover:text-blue-400 flex items-center gap-1">
-                  <Plus size={12} />Agregar item
-                </button>
-              )}
+          {/* Items (readonly) */}
+          {form.solicitudId && (
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <label className="label mb-0">Items de la cotización</label>
+                <span className="flex items-center gap-1 text-xs text-slate-500">
+                  <Lock size={11} /> Solo lectura
+                </span>
+              </div>
+              <div className="rounded-xl border border-slate-700/60 overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-800 text-slate-400 text-xs">
+                      <th className="text-left px-3 py-2 font-medium">Descripción</th>
+                      <th className="text-center px-3 py-2 font-medium w-16">Cant.</th>
+                      <th className="text-right px-3 py-2 font-medium w-32">Precio unit.</th>
+                      <th className="text-right px-3 py-2 font-medium w-32">Subtotal</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allItems.map((item, i) => {
+                      const isManoObra = item.descripcion === 'Mano de Obra';
+                      return (
+                        <tr
+                          key={i}
+                          className={`border-t border-slate-700/40 ${isManoObra ? 'bg-blue-500/5' : 'bg-slate-800/30'}`}
+                        >
+                          <td className="px-3 py-2 text-slate-200 flex items-center gap-2">
+                            {isManoObra && <Lock size={11} className="text-blue-400 shrink-0" />}
+                            {item.descripcion}
+                            {isManoObra && <span className="text-xs text-blue-400 ml-1">(fijo)</span>}
+                          </td>
+                          <td className="px-3 py-2 text-center text-slate-300">{item.cantidad}</td>
+                          <td className="px-3 py-2 text-right text-slate-300">${Number(item.precioUnit).toLocaleString('es-CO')}</td>
+                          <td className="px-3 py-2 text-right font-semibold text-slate-200">
+                            ${(Number(item.cantidad) * Number(item.precioUnit)).toLocaleString('es-CO')}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex justify-end mt-3 pt-3 border-t border-slate-700/50">
+                <p className="font-bold text-green-400">Total: ${total.toLocaleString('es-CO')} COP</p>
+              </div>
             </div>
+          )}
 
-            <div className="space-y-2">
-              {form.items.map((item, i) => (
-                <div key={i} className="grid grid-cols-12 gap-2 items-start">
-                  <input
-                    className={`input-field col-span-5 text-sm py-2 ${itemsFromSolicitud.length > 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
-                    placeholder="Descripción"
-                    value={item.descripcion}
-                    onChange={e => setItem(i, 'descripcion', e.target.value)}
-                    readOnly={itemsFromSolicitud.length > 0}
-                  />
-                  <input
-                    type="number"
-                    className={`input-field col-span-2 text-sm py-2 ${itemsFromSolicitud.length > 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
-                    placeholder="Cant."
-                    value={item.cantidad}
-                    onChange={e => setItem(i, 'cantidad', e.target.value)}
-                    min="1"
-                    readOnly={itemsFromSolicitud.length > 0}
-                  />
-                  <input
-                    type="number"
-                    className={`input-field col-span-4 text-sm py-2 ${itemsFromSolicitud.length > 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
-                    placeholder="Precio unit."
-                    value={item.precioUnit}
-                    onChange={e => setItem(i, 'precioUnit', e.target.value)}
-                    readOnly={itemsFromSolicitud.length > 0}
-                  />
-                  {form.items.length > 1 && itemsFromSolicitud.length === 0 && (
-                    <button type="button" onClick={() => removeItem(i)} className="col-span-1 text-red-400 hover:text-red-300 mt-2 flex justify-center">
-                      <Trash2 size={14} />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            <div className="flex justify-end mt-3 pt-3 border-t border-slate-700/50">
-              <p className="font-bold text-green-400">Total: ${total.toLocaleString('es-CO')} COP</p>
-            </div>
-          </div>
-
+          {/* Notas */}
           <div>
             <label className="label">Notas adicionales</label>
-            <textarea className="input-field resize-none text-sm" rows={2} value={form.notas} onChange={e => setField('notas', e.target.value)} placeholder="Condiciones, validez, etc." />
+            <textarea
+              className="input-field resize-none text-sm"
+              rows={2}
+              value={form.notas}
+              onChange={e => setForm(p => ({ ...p, notas: e.target.value }))}
+              placeholder="Condiciones, validez, etc."
+            />
           </div>
 
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={() => setModal(false)} className="btn-secondary flex-1 justify-center">Cancelar</button>
-            <button type="submit" disabled={saving} className="btn-primary flex-1 justify-center">{saving ? 'Creando...' : 'Crear cotización'}</button>
+            <button
+              type="submit"
+              disabled={saving || !form.solicitudId}
+              className="btn-primary flex-1 justify-center disabled:opacity-50"
+            >
+              {saving ? 'Creando...' : 'Crear cotización'}
+            </button>
           </div>
         </form>
       </Modal>
