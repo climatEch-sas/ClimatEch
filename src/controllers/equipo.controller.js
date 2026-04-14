@@ -30,7 +30,16 @@ export const getOne = async (req, res, next) => {
       include: {
         cliente: true,
         ordenes: {
-          include: { tecnico: true, mantenimientos: true },
+          include: {
+            tecnico: true,
+            mantenimientos: {
+              include: {
+                detalleRepuestos: {
+                  include: { repuesto: true }
+                }
+              }
+            }
+          },
           orderBy: { createdAt: 'desc' }
         }
       }
